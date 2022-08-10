@@ -1,13 +1,13 @@
 <template>
   <div
-    class="sticky top-0 z-10 flex items-center p-4 overflow-auto bg-primary hide-scrollbar whitespace-nowrap"
+    class="sticky top-0 z-10 flex items-start p-4 overflow-auto bg-primary hide-scrollbar whitespace-nowrap"
   >
     <div
       v-if="response == null"
       class="flex flex-col items-center justify-center flex-1 text-secondaryLight"
     >
       <div class="flex pb-4 my-4 space-x-2">
-        <div class="flex flex-col items-end space-y-4 text-right">
+        <div class="flex flex-col items-end text-right space-y-4">
           <span class="flex items-center flex-1">
             {{ t("shortcut.request.send_request") }}
           </span>
@@ -117,9 +117,21 @@
             <span class="text-secondary"> {{ t("response.time") }}: </span>
             {{ `${response.meta.responseDuration} ms` }}
           </span>
-          <span v-if="response.meta && response.meta.responseSize">
+          <span
+            v-if="response.meta && response.meta.responseSize"
+            v-tippy="
+              readableResponseSize
+                ? { theme: 'tooltip' }
+                : { onShow: () => false }
+            "
+            :title="`${response.meta.responseSize} B`"
+          >
             <span class="text-secondary"> {{ t("response.size") }}: </span>
-            {{ `${response.meta.responseSize} B` }}
+            {{
+              readableResponseSize
+                ? readableResponseSize
+                : `${response.meta.responseSize} B`
+            }}
           </span>
         </div>
       </div>
@@ -140,6 +152,29 @@ const t = useI18n()
 const props = defineProps<{
   response: HoppRESTResponse
 }>()
+
+/**
+ * Gives the response size in a human readable format
+ * (changes unit from B to MB/KB depending on the size)
+ * If no changes (error res state) or value can be made (size < 1KB ?),
+ * it returns undefined
+ */
+const readableResponseSize = computed(() => {
+  if (
+    props.response.type === "loading" ||
+    props.response.type === "network_fail" ||
+    props.response.type === "script_fail" ||
+    props.response.type === "fail"
+  )
+    return undefined
+
+  const size = props.response.meta.responseSize
+
+  if (size >= 100000) return (size / 1000000).toFixed(2) + " MB"
+  if (size >= 1000) return (size / 1000).toFixed(2) + " KB"
+
+  return undefined
+})
 
 const statusCategory = computed(() => {
   if (

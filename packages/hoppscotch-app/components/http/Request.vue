@@ -1,8 +1,10 @@
 <template>
   <div
-    class="sticky top-0 z-10 flex p-4 space-x-2 overflow-x-auto bg-primary hide-scrollbar"
+    class="sticky top-0 z-10 flex-none p-4 overflow-x-auto sm:flex sm:flex-shrink-0 sm:space-x-2 bg-primary hide-scrollbar"
   >
-    <div class="flex flex-1">
+    <div
+      class="flex flex-1 overflow-auto border rounded min-w-52 border-divider whitespace-nowrap hide-scrollbar"
+    >
       <div class="relative flex">
         <label for="method">
           <tippy
@@ -16,7 +18,7 @@
               <span class="select-wrapper">
                 <input
                   id="method"
-                  class="flex px-4 py-2 font-semibold border rounded-l cursor-pointer bg-primaryLight border-divider text-secondaryDark w-26 hover:border-dividerDark focus-visible:bg-transparent focus-visible:border-dividerDark"
+                  class="flex px-4 py-2 font-semibold rounded-l cursor-pointer transition text-secondaryDark w-26 bg-primaryLight"
                   :value="newMethod"
                   :readonly="!isCustomMethod"
                   :placeholder="`${t('request.method')}`"
@@ -24,39 +26,30 @@
                 />
               </span>
             </template>
-            <SmartItem
-              v-for="(method, index) in methods"
-              :key="`method-${index}`"
-              :label="method"
-              @click.native="onSelectMethod(method)"
-            />
+            <div class="flex flex-col" role="menu">
+              <SmartItem
+                v-for="(method, index) in methods"
+                :key="`method-${index}`"
+                :label="method"
+                @click.native="onSelectMethod(method)"
+              />
+            </div>
           </tippy>
         </label>
       </div>
-      <div class="flex flex-1">
+      <div
+        class="flex flex-1 overflow-auto border-l rounded-r transition border-divider bg-primaryLight whitespace-nowrap hide-scrollbar"
+      >
         <SmartEnvInput
           v-model="newEndpoint"
           :placeholder="`${t('request.url')}`"
-          styles="
-            bg-primaryLight
-            border border-divider
-            flex
-            flex-1
-            rounded-r
-            text-secondaryDark
-            min-w-32
-            py-1
-            px-4
-            hover:border-dividerDark
-            focus-visible:border-dividerDark
-            focus-visible:bg-transparent
-          "
           @enter="newSendRequest()"
           @paste="onPasteUrl($event)"
         />
       </div>
     </div>
-    <div class="flex">
+
+    <div class="flex mt-2 sm:mt-0">
       <ButtonPrimary
         id="send"
         class="flex-1 rounded-r-none min-w-20"
@@ -79,6 +72,7 @@
             ref="sendTippyActions"
             class="flex flex-col focus:outline-none"
             tabindex="0"
+            role="menu"
             @keyup.c="curl.$el.click()"
             @keyup.s="show.$el.click()"
             @keyup.delete="clearAll.$el.click()"
@@ -124,12 +118,8 @@
         </tippy>
       </span>
       <ButtonSecondary
-        class="ml-2 rounded rounded-r-none"
-        :label="
-          windowInnerWidth.x.value >= 768 && COLUMN_LAYOUT
-            ? `${t('request.save')}`
-            : ''
-        "
+        class="flex-1 ml-2 rounded rounded-r-none"
+        :label="COLUMN_LAYOUT ? `${t('request.save')}` : ''"
         filled
         svg="save"
         @click.native="saveRequest()"
@@ -164,6 +154,7 @@
             ref="saveTippyActions"
             class="flex flex-col focus:outline-none"
             tabindex="0"
+            role="menu"
             @keyup.c="copyRequestAction.$el.click()"
             @keyup.s="saveRequestAction.$el.click()"
             @keyup.escape="saveOptions.tippy().hide()"
@@ -180,6 +171,12 @@
                 }
               "
             />
+            <SmartItem
+              svg="link-2"
+              :label="`${t('request.view_my_links')}`"
+              to="/profile"
+            />
+            <hr />
             <SmartItem
               ref="saveRequestAction"
               :label="`${t('request.save_as')}`"
@@ -217,6 +214,8 @@
 import { computed, ref, watch } from "@nuxtjs/composition-api"
 import { isLeft, isRight } from "fp-ts/lib/Either"
 import * as E from "fp-ts/Either"
+import cloneDeep from "lodash/cloneDeep"
+import { refAutoReset } from "@vueuse/core"
 import {
   updateRESTResponse,
   restEndpoint$,
@@ -243,10 +242,9 @@ import {
 import { defineActionHandler } from "~/helpers/actions"
 import { copyToClipboard } from "~/helpers/utils/clipboard"
 import { useSetting } from "~/newstore/settings"
-import { overwriteRequestTeams } from "~/helpers/teams/utils"
-import { apolloClient } from "~/helpers/apollo"
-import useWindowSize from "~/helpers/utils/useWindowSize"
 import { createShortcode } from "~/helpers/backend/mutations/Shortcode"
+import { runMutation } from "~/helpers/backend/GQLClient"
+import { UpdateRequestDocument } from "~/helpers/backend/graphql"
 
 const t = useI18n()
 
@@ -307,6 +305,8 @@ const newSendRequest = async () => {
     return
   }
 
+  ensureMethodInEndpoint()
+
   loading.value = true
 
   // Double calling is because the function returns a TaskEither than should be executed
@@ -345,20 +345,29 @@ const newSendRequest = async () => {
   }
 }
 
-const onPasteUrl = (e: { event: ClipboardEvent; previousValue: string }) => {
+const ensureMethodInEndpoint = () => {
+  if (
+    !/^http[s]?:\/\//.test(newEndpoint.value) &&
+    !newEndpoint.value.startsWith("<<")
+  ) {
+    const domain = newEndpoint.value.split(/[/:#?]+/)[0]
+    if (domain === "localhost" || /([0-9]+\.)*[0-9]/.test(domain)) {
+      setRESTEndpoint("http://" + newEndpoint.value)
+    } else {
+      setRESTEndpoint("https://" + newEndpoint.value)
+    }
+  }
+}
+
+const onPasteUrl = (e: { pastedValue: string; prevValue: string }) => {
   if (!e) return
 
-  const clipboardData = e.event.clipboardData
-
-  const pastedData = clipboardData?.getData("Text")
-
-  if (!pastedData) return
+  const pastedData = e.pastedValue
 
   if (isCURL(pastedData)) {
-    e.event.preventDefault()
     showCurlImportModal.value = true
     curlText.value = pastedData
-    newEndpoint.value = e.previousValue
+    newEndpoint.value = e.prevValue
   }
 }
 
@@ -385,7 +394,11 @@ const clearContent = () => {
   resetRESTRequest()
 }
 
-const copyLinkIcon = hasNavigatorShare ? ref("share-2") : ref("copy")
+const copyLinkIcon = refAutoReset<"share-2" | "copy" | "check">(
+  hasNavigatorShare ? "share-2" : "copy",
+  1000
+)
+
 const shareLink = ref<string | null>("")
 const fetchingShareLink = ref(false)
 
@@ -441,7 +454,6 @@ const copyShareLink = (shareLink: string) => {
     copyLinkIcon.value = "check"
     copyToClipboard(link)
     toast.success(`${t("state.copied_to_clipboard")}`)
-    setTimeout(() => (copyLinkIcon.value = "copy"), 2000)
   }
 }
 
@@ -477,14 +489,21 @@ const saveRequest = () => {
     showSaveRequestModal.value = true
     return
   }
-
   if (saveCtx.originLocation === "user-collection") {
+    const req = getRESTRequest()
+
     try {
       editRESTRequest(
         saveCtx.folderPath,
         saveCtx.requestIndex,
         getRESTRequest()
       )
+      setRESTSaveContext({
+        originLocation: "user-collection",
+        folderPath: saveCtx.folderPath,
+        requestIndex: saveCtx.requestIndex,
+        req: cloneDeep(req),
+      })
       toast.success(`${t("request.saved")}`)
     } catch (e) {
       setRESTSaveContext(null)
@@ -495,18 +514,24 @@ const saveRequest = () => {
 
     // TODO: handle error case (NOTE: overwriteRequestTeams is async)
     try {
-      overwriteRequestTeams(
-        apolloClient,
-        JSON.stringify(req),
-        req.name,
-        saveCtx.requestID
-      )
-        .then(() => {
-          toast.success(`${t("request.saved")}`)
-        })
-        .catch(() => {
+      runMutation(UpdateRequestDocument, {
+        requestID: saveCtx.requestID,
+        data: {
+          title: req.name,
+          request: JSON.stringify(req),
+        },
+      })().then((result) => {
+        if (E.isLeft(result)) {
           toast.error(`${t("profile.no_permission")}`)
-        })
+        } else {
+          setRESTSaveContext({
+            originLocation: "team-collection",
+            requestID: saveCtx.requestID,
+            req: cloneDeep(req),
+          })
+          toast.success(`${t("request.saved")}`)
+        }
+      })
     } catch (error) {
       showSaveRequestModal.value = true
       toast.error(`${t("error.something_went_wrong")}`)
@@ -540,6 +565,5 @@ const isCustomMethod = computed(() => {
 
 const requestName = useRESTRequestName()
 
-const windowInnerWidth = useWindowSize()
 const COLUMN_LAYOUT = useSetting("COLUMN_LAYOUT")
 </script>

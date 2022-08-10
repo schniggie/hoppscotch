@@ -1,6 +1,6 @@
 overwrite: true
 schema:
-  - ${API_URL}
+  - ${BACKEND_GQL_URL}
 generates:
   helpers/backend/graphql.ts:
     documents: "**/*.graphql"

@@ -1,3 +1,4 @@
+// TODO: fix cache
 import {
   ref,
   reactive,
@@ -22,19 +23,20 @@ import {
   subscriptionExchange,
 } from "@urql/core"
 import { authExchange } from "@urql/exchange-auth"
-import { offlineExchange } from "@urql/exchange-graphcache"
-import { makeDefaultStorage } from "@urql/exchange-graphcache/default-storage"
+// import { offlineExchange } from "@urql/exchange-graphcache"
+// import { makeDefaultStorage } from "@urql/exchange-graphcache/default-storage"
 import { devtoolsExchange } from "@urql/devtools"
 import { SubscriptionClient } from "subscriptions-transport-ws"
 import * as E from "fp-ts/Either"
 import * as TE from "fp-ts/TaskEither"
 import { pipe, constVoid } from "fp-ts/function"
 import { Source, subscribe, pipe as wonkaPipe, onEnd } from "wonka"
-import { keyDefs } from "./caching/keys"
-import { optimisticDefs } from "./caching/optimistic"
-import { updatesDef } from "./caching/updates"
-import { resolversDef } from "./caching/resolvers"
-import schema from "./backend-schema.json"
+import { Subject } from "rxjs"
+// import { keyDefs } from "./caching/keys"
+// import { optimisticDefs } from "./caching/optimistic"
+// import { updatesDef } from "./caching/updates"
+// import { resolversDef } from "./caching/resolvers"
+// import schema from "./backend-schema.json"
 import {
   authIdToken$,
   getAuthIDToken,
@@ -42,24 +44,24 @@ import {
   waitProbableLoginToConfirm,
 } from "~/helpers/fb/auth"
 
-const BACKEND_GQL_URL = process.env.API_URL
+const BACKEND_GQL_URL =
+  process.env.BACKEND_GQL_URL ?? "https://api.hoppscotch.io/graphql"
+const BACKEND_WS_URL =
+  process.env.BACKEND_WS_URL ?? "wss://api.hoppscotch.io/graphql"
 
-const storage = makeDefaultStorage({
-  idbName: "hoppcache-v1",
-  maxAge: 7,
+// const storage = makeDefaultStorage({
+//   idbName: "hoppcache-v1",
+//   maxAge: 7,
+// })
+
+const subscriptionClient = new SubscriptionClient(BACKEND_WS_URL, {
+  reconnect: true,
+  connectionParams: () => {
+    return {
+      authorization: `Bearer ${authIdToken$.value}`,
+    }
+  },
 })
-
-const subscriptionClient = new SubscriptionClient(
-  process.env.API_WS_URL as string,
-  {
-    reconnect: true,
-    connectionParams: () => {
-      return {
-        authorization: `Bearer ${authIdToken$.value}`,
-      }
-    },
-  }
-)
 
 authIdToken$.subscribe(() => {
   subscriptionClient.client?.close()
@@ -71,14 +73,14 @@ const createHoppClient = () =>
     exchanges: [
       devtoolsExchange,
       dedupExchange,
-      offlineExchange({
-        schema: schema as any,
-        keys: keyDefs,
-        optimistic: optimisticDefs,
-        updates: updatesDef,
-        resolvers: resolversDef,
-        storage,
-      }),
+      // offlineExchange({
+      //   schema: schema as any,
+      //   keys: keyDefs,
+      //   optimistic: optimisticDefs,
+      //   updates: updatesDef,
+      //   resolvers: resolversDef,
+      //   storage,
+      // }),
       authExchange({
         addAuthToOperation({ authState, operation }) {
           if (!authState || !authState.authToken) {
@@ -117,7 +119,6 @@ const createHoppClient = () =>
       fetchExchange,
       subscriptionExchange({
         forwardSubscription: (operation) =>
-          // @ts-expect-error: An issue with the Urql typing
           subscriptionClient.request(operation),
       }),
     ],
@@ -140,6 +141,11 @@ type UseQueryOptions<T = any, V = object> = {
   pollDuration?: number | undefined
 }
 
+type RunQueryOptions<T = any, V = object> = {
+  query: TypedDocumentNode<T, V>
+  variables?: V
+}
+
 /**
  * A wrapper type for defining errors possible in a GQL operation
  */
@@ -152,6 +158,107 @@ export type GQLError<T extends string> =
       type: "gql_error"
       error: T
     }
+
+export const runGQLQuery = <DocType, DocVarType, DocErrorType extends string>(
+  args: RunQueryOptions<DocType, DocVarType>
+): Promise<E.Either<GQLError<DocErrorType>, DocType>> => {
+  const request = createRequest<DocType, DocVarType>(args.query, args.variables)
+  const source = client.value.executeQuery(request, {
+    requestPolicy: "network-only",
+  })
+
+  return new Promise((resolve) => {
+    const sub = wonkaPipe(
+      source,
+      subscribe((res) => {
+        if (sub) {
+          sub.unsubscribe()
+        }
+
+        pipe(
+          // The target
+          res.data as DocType | undefined,
+          // Define what happens if data does not exist (it is an error)
+          E.fromNullable(
+            pipe(
+              // Take the network error value
+              res.error?.networkError,
+              // If it null, set the left to the generic error name
+              E.fromNullable(res.error?.message),
+              E.match(
+                // The left case (network error was null)
+                (gqlErr) =>
+                  <GQLError<DocErrorType>>{
+                    type: "gql_error",
+                    error: parseGQLErrorString(gqlErr ?? "") as DocErrorType,
+                  },
+                // The right case (it was a GraphQL Error)
+                (networkErr) =>
+                  <GQLError<DocErrorType>>{
+                    type: "network_error",
+                    error: networkErr,
+                  }
+              )
+            )
+          ),
+          resolve
+        )
+      })
+    )
+  })
+}
+
+export const runGQLSubscription = <
+  DocType,
+  DocVarType,
+  DocErrorType extends string
+>(
+  args: RunQueryOptions<DocType, DocVarType>
+) => {
+  const result$ = new Subject<E.Either<GQLError<DocErrorType>, DocType>>()
+
+  const source = client.value.executeSubscription(
+    createRequest(args.query, args.variables)
+  )
+
+  const sub = wonkaPipe(
+    source,
+    subscribe((res) => {
+      result$.next(
+        pipe(
+          // The target
+          res.data as DocType | undefined,
+          // Define what happens if data does not exist (it is an error)
+          E.fromNullable(
+            pipe(
+              // Take the network error value
+              res.error?.networkError,
+              // If it null, set the left to the generic error name
+              E.fromNullable(res.error?.message),
+              E.match(
+                // The left case (network error was null)
+                (gqlErr) =>
+                  <GQLError<DocErrorType>>{
+                    type: "gql_error",
+                    error: parseGQLErrorString(gqlErr ?? "") as DocErrorType,
+                  },
+                // The right case (it was a GraphQL Error)
+                (networkErr) =>
+                  <GQLError<DocErrorType>>{
+                    type: "network_error",
+                    error: networkErr,
+                  }
+              )
+            )
+          )
+        )
+      )
+    })
+  )
+
+  // Returns the stream and a subscription handle to unsub
+  return [result$, sub] as const
+}
 
 export const useGQLQuery = <DocType, DocVarType, DocErrorType extends string>(
   _args: UseQueryOptions<DocType, DocVarType>
@@ -178,6 +285,9 @@ export const useGQLQuery = <DocType, DocVarType, DocErrorType extends string>(
   ) as any
 
   const source: Ref<Source<OperationResult> | undefined> = ref()
+
+  // A ref used to force re-execution of the query
+  const updateTicker: Ref<boolean> = ref(true)
 
   // Toggles between true and false to cause the polling operation to tick
   const pollerTick: Ref<boolean> = ref(true)
@@ -219,9 +329,13 @@ export const useGQLQuery = <DocType, DocVarType, DocErrorType extends string>(
         // eslint-disable-next-line no-unused-expressions
         pollerTick.value
 
+        // Just keep track of update ticking, but don't do anything
+        // eslint-disable-next-line no-unused-expressions
+        updateTicker.value
+
         source.value = !isPaused.value
           ? client.value.executeQuery<DocType, DocVarType>(request.value, {
-              requestPolicy: "cache-and-network",
+              requestPolicy: "network-only",
             })
           : undefined
       },
@@ -284,7 +398,6 @@ export const useGQLQuery = <DocType, DocVarType, DocErrorType extends string>(
                   )
                 )
               )
-
               loading.value = false
             }
           })
@@ -305,11 +418,22 @@ export const useGQLQuery = <DocType, DocVarType, DocErrorType extends string>(
     }
 
     isPaused.value = false
+    updateTicker.value = !updateTicker.value
+  }
+
+  const pause = () => {
+    isPaused.value = true
+  }
+
+  const unpause = () => {
+    isPaused.value = false
   }
 
   const response = reactive({
     loading,
     data,
+    pause,
+    unpause,
     isStale,
     execute,
   })

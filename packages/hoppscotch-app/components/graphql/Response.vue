@@ -1,15 +1,17 @@
 <template>
-  <div>
+  <div
+    class="flex flex-col flex-1 overflow-auto hide-scrollbar whitespace-nowrap"
+  >
     <div
       v-if="responseString === 'loading'"
-      class="flex flex-col items-center justify-center p-4"
+      class="flex flex-col items-center justify-center p-4 text-secondaryLight"
     >
       <SmartSpinner class="my-4" />
       <span class="text-secondaryLight">{{ t("state.loading") }}</span>
     </div>
-    <div v-else-if="responseString">
+    <div v-else-if="responseString" class="flex flex-col flex-1">
       <div
-        class="sticky top-0 z-10 flex items-center justify-between flex-1 pl-4 border-b bg-primary border-dividerLight"
+        class="sticky top-0 z-10 flex items-center justify-between pl-4 border-b bg-primary border-dividerLight"
       >
         <label class="font-semibold text-secondaryLight">
           {{ t("response.title") }}
@@ -38,14 +40,14 @@
           />
         </div>
       </div>
-      <div ref="schemaEditor"></div>
+      <div ref="schemaEditor" class="flex flex-col flex-1"></div>
     </div>
     <div
       v-else
-      class="flex flex-col items-center justify-center flex-1 p-4 text-secondaryLight"
+      class="flex flex-col items-center justify-center p-4 text-secondaryLight"
     >
       <div class="flex pb-4 my-4 space-x-2">
-        <div class="flex flex-col items-end space-y-4 text-right">
+        <div class="flex flex-col items-end text-right space-y-4">
           <span class="flex items-center flex-1">
             {{ t("shortcut.general.command_menu") }}
           </span>
@@ -76,6 +78,7 @@
 
 <script setup lang="ts">
 import { reactive, ref } from "@nuxtjs/composition-api"
+import { refAutoReset } from "@vueuse/core"
 import { useCodemirror } from "~/helpers/editor/codemirror"
 import { copyToClipboard } from "~/helpers/utils/clipboard"
 import {
@@ -109,14 +112,16 @@ useCodemirror(
   })
 )
 
-const downloadResponseIcon = ref("download")
-const copyResponseIcon = ref("copy")
+const downloadResponseIcon = refAutoReset<"download" | "check">(
+  "download",
+  1000
+)
+const copyResponseIcon = refAutoReset<"copy" | "check">("copy", 1000)
 
 const copyResponse = () => {
   copyToClipboard(responseString.value!)
   copyResponseIcon.value = "check"
   toast.success(`${t("state.copied_to_clipboard")}`)
-  setTimeout(() => (copyResponseIcon.value = "copy"), 1000)
 }
 
 const downloadResponse = () => {
@@ -133,7 +138,6 @@ const downloadResponse = () => {
   setTimeout(() => {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
-    downloadResponseIcon.value = "download"
   }, 1000)
 }
 </script>
